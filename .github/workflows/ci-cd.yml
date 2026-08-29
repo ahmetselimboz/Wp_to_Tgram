@@ -76,7 +76,6 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 15m
-          script_stop: true
           envs: APP_DIR,GH_TOKEN,REPO,SHA,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             set -euo pipefail

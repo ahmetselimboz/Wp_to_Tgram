@@ -104,5 +104,14 @@ jobs:
               exit 1
             fi
 
-            docker compose up -d --build --remove-orphans
-            docker compose ps
+            if docker info >/dev/null 2>&1; then
+              docker compose up -d --build --remove-orphans
+              docker compose ps
+            elif sudo -n docker info >/dev/null 2>&1; then
+              sudo -n docker compose up -d --build --remove-orphans
+              sudo -n docker compose ps
+            else
+              echo "Docker izni yok. VPS'te bir kez şunu çalıştır, sonra Actions'ı tekrar çalıştır:"
+              echo "  sudo usermod -aG docker \$USER"
+              exit 1
+            fi

@@ -16,4 +16,5 @@ export const config = {
   authDir: process.env.AUTH_DIR ?? './data/auth',
   dataDir: process.env.DATA_DIR ?? './data',
   logLevel: process.env.LOG_LEVEL ?? 'info',
+  notifyDelayMs: Number(process.env.NOTIFY_DELAY_MS ?? 15_000),
 };

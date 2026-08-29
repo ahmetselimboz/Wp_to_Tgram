@@ -82,6 +82,7 @@ Bağlantı kurulunca Telegram'a `✅ WhatsApp bağlantısı kuruldu.` mesajı ge
 | `AUTH_DIR` | Hayır | Oturum dizini (varsayılan: `/data/auth`) |
 | `DATA_DIR` | Hayır | QR ve veri dizini (varsayılan: `/data`) |
 | `LOG_LEVEL` | Hayır | `info`, `debug`, vb. |
+| `NOTIFY_DELAY_MS` | Hayır | Sohbetteyken bildirim: okursan Telegram'a gitmez (varsayılan: `15000`) |
 
 ## Yararlı komutlar
 

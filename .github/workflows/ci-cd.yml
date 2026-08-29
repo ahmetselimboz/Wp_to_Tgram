@@ -95,8 +95,12 @@ jobs:
 
             if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
               umask 077
-              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
-                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" > .env
+              EXISTING_DELAY=""
+              if [ -f .env ]; then
+                EXISTING_DELAY=$(grep '^NOTIFY_DELAY_MS=' .env | tail -n1 | cut -d= -f2- || true)
+              fi
+              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nNOTIFY_DELAY_MS=%s\n' \
+                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "${EXISTING_DELAY:-15000}" > .env
             fi
 
             if [ ! -f .env ]; then
@@ -105,9 +109,11 @@ jobs:
             fi
 
             if docker info >/dev/null 2>&1; then
+              docker compose stop -t 25 || true
               docker compose up -d --build --remove-orphans
               docker compose ps
             elif sudo -n docker info >/dev/null 2>&1; then
+              sudo -n docker compose stop -t 25 || true
               sudo -n docker compose up -d --build --remove-orphans
               sudo -n docker compose ps
             else

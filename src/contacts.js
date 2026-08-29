@@ -38,12 +38,29 @@ function prettyPhone(jid) {
   return `+${user}`;
 }
 
-function mergeRecord(existing, incoming) {
+function looksLikePhone(value) {
+  return typeof value === 'string' && /^\+?\d{5,}$/.test(value.trim());
+}
+
+function mergeRecord(existing, incoming, source) {
+  const incomingName = firstNonEmpty(incoming.name);
+  const incomingNotify = firstNonEmpty(incoming.notify);
+  const sameAsProfile = incomingName && incomingNotify && incomingName === incomingNotify;
+
+  let name = firstNonEmpty(existing?.name);
+  if (incomingName && !looksLikePhone(incomingName)) {
+    if (source === 'contacts') {
+      name = incomingName;
+    } else if (!name && !sameAsProfile) {
+      name = incomingName;
+    }
+  }
+
   return {
     id: incoming.id || existing?.id,
     lid: firstNonEmpty(incoming.lid, existing?.lid),
-    name: firstNonEmpty(incoming.name, existing?.name),
-    notify: firstNonEmpty(incoming.notify, existing?.notify),
+    name,
+    notify: firstNonEmpty(incomingNotify, existing?.notify),
     verifiedName: firstNonEmpty(incoming.verifiedName, existing?.verifiedName),
   };
 }
@@ -82,7 +99,7 @@ export async function createContactStore({ filePath, logger }) {
     if (rawId !== id) rememberAlias(rawId, id);
 
     const existing = byId.get(id);
-    const merged = mergeRecord(existing, { ...incoming, id });
+    const merged = mergeRecord(existing, { ...incoming, id }, incoming._source);
     byId.set(id, merged);
     if (merged.lid) rememberAlias(merged.lid, id);
 
@@ -120,7 +137,7 @@ export async function createContactStore({ filePath, logger }) {
         rememberAlias(from, to);
       }
       for (const contact of data.contacts ?? []) {
-        upsertOne(contact);
+        upsertOne({ ...contact, _source: 'contacts' });
       }
       logger.info(
         { total: byId.size, named: [...byId.values()].filter((c) => c.name).length },
@@ -135,12 +152,20 @@ export async function createContactStore({ filePath, logger }) {
     }
   }
 
-  function upsert(contacts) {
+  function upsert(contacts, source = 'contacts') {
     let changed = false;
     for (const contact of contacts ?? []) {
-      if (upsertOne(contact)) changed = true;
+      if (upsertOne({ ...contact, _source: source })) changed = true;
     }
     if (changed) scheduleSave();
+  }
+
+  function stats() {
+    const all = [...byId.values()];
+    return {
+      total: all.length,
+      named: all.filter((c) => c.name).length,
+    };
   }
 
   function alias(lid, jid) {
@@ -184,41 +209,55 @@ export async function createContactStore({ filePath, logger }) {
 
   await load();
 
-  return { upsert, alias, resolve };
+  return { upsert, alias, resolve, stats };
 }
 
 export function bindContactEvents(sock, contactStore) {
   sock.ev.on('contacts.upsert', (contacts) => {
-    contactStore.upsert(contacts);
+    contactStore.upsert(contacts, 'contacts');
   });
 
   sock.ev.on('contacts.update', (updates) => {
-    contactStore.upsert(updates);
+    contactStore.upsert(updates, 'contacts');
   });
 
   sock.ev.on('messaging-history.set', ({ contacts }) => {
-    contactStore.upsert(contacts);
-  });
-
-  sock.ev.on('chats.upsert', (chats) => {
-    contactStore.upsert(
-      (chats ?? [])
-        .filter((chat) => isPersonJid(chat.id) && chat.name)
-        .map((chat) => ({ id: chat.id, name: chat.name })),
-    );
-  });
-
-  sock.ev.on('chats.update', (updates) => {
-    contactStore.upsert(
-      (updates ?? [])
-        .filter((chat) => isPersonJid(chat.id) && chat.name)
-        .map((chat) => ({ id: chat.id, name: chat.name })),
-    );
+    contactStore.upsert(contacts, 'history');
   });
 
   sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
     contactStore.alias(lid, jid);
   });
+}
+
+function asLidAndPn(a, b) {
+  if (!a || !b) return null;
+  const left = normalizeJid(a);
+  const right = normalizeJid(b);
+  if (!left || !right) return null;
+  if (left.endsWith('@lid') && right.endsWith('@s.whatsapp.net')) return [left, right];
+  if (right.endsWith('@lid') && left.endsWith('@s.whatsapp.net')) return [right, left];
+  return null;
+}
+
+export function rememberSenderIds(contactStore, message) {
+  const key = message.key ?? {};
+  const pairs = [
+    asLidAndPn(key.senderLid, key.senderPn),
+    asLidAndPn(key.senderLid, key.remoteJidAlt),
+    asLidAndPn(key.participant, key.participantAlt),
+    asLidAndPn(key.remoteJid, key.remoteJidAlt),
+    asLidAndPn(key.remoteJid, key.senderPn),
+  ];
+
+  for (const pair of pairs) {
+    if (pair) contactStore.alias(pair[0], pair[1]);
+  }
+
+  const jid = normalizeJid(key.participant ?? key.remoteJid);
+  if (jid && isPersonJid(jid) && message.pushName) {
+    contactStore.upsert([{ id: jid, notify: message.pushName }], 'notify');
+  }
 }
 
 export function senderJidsFromMessage(message) {

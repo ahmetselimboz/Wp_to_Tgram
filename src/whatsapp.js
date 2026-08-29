@@ -8,6 +8,11 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { config } from './config.js';
+import {
+  bindContactEvents,
+  createContactStore,
+  senderJidsFromMessage,
+} from './contacts.js';
 import { formatNotification, formatConnectionStatus } from './formatter.js';
 import { sendTelegramMessage, sendTelegramPhoto } from './telegram.js';
 
@@ -24,20 +29,8 @@ async function saveQrCode(qr) {
   logger.info({ pngPath, txtPath }, 'QR kodu kaydedildi — WhatsApp > Bağlı Cihazlar > Cihaz Bağla');
 }
 
-async function resolveSenderName(sock, message) {
-  const jid = message.key.participant ?? message.key.remoteJid;
-  if (!jid) return message.pushName ?? 'Bilinmeyen';
-
-  try {
-    const contact = await sock.onWhatsApp(jid);
-    if (contact?.[0]?.exists) {
-      return message.pushName ?? jid.split('@')[0];
-    }
-  } catch {
-    // pushName yeterli
-  }
-
-  return message.pushName ?? jid.split('@')[0];
+function resolveSenderName(contactStore, message) {
+  return contactStore.resolve(senderJidsFromMessage(message), message.pushName);
 }
 
 async function resolveGroupName(sock, groupJid) {
@@ -59,13 +52,13 @@ function shouldSkipMessage(message) {
   return false;
 }
 
-async function handleIncomingMessage(sock, message) {
+async function handleIncomingMessage(sock, contactStore, message) {
   if (shouldSkipMessage(message)) return;
 
   const remoteJid = message.key.remoteJid;
   const isGroup = remoteJid.endsWith('@g.us');
 
-  const senderName = await resolveSenderName(sock, message);
+  const senderName = resolveSenderName(contactStore, message);
   const groupName = isGroup ? await resolveGroupName(sock, remoteJid) : null;
 
   const text = formatNotification(message, { senderName, groupName, isGroup });
@@ -82,6 +75,10 @@ export async function startWhatsApp() {
 
   const { state, saveCreds } = await useMultiFileAuthState(config.authDir);
   const { version } = await fetchLatestBaileysVersion();
+  const contactStore = await createContactStore({
+    filePath: join(config.dataDir, 'contacts.json'),
+    logger,
+  });
 
   let sock = null;
 
@@ -96,6 +93,7 @@ export async function startWhatsApp() {
     });
 
     sock.ev.on('creds.update', saveCreds);
+    bindContactEvents(sock, contactStore);
 
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -150,7 +148,7 @@ export async function startWhatsApp() {
 
       for (const message of messages) {
         try {
-          await handleIncomingMessage(sock, message);
+          await handleIncomingMessage(sock, contactStore, message);
         } catch (err) {
           logger.error({ err, id: message.key.id }, 'Mesaj işlenemedi');
         }

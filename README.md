@@ -103,6 +103,48 @@ docker compose up -d --build
 
 Volume adını görmek için: `docker volume ls | grep wp`
 
+## CI/CD (GitHub Actions)
+
+`main`'e her push'ta GitHub Actions kodu kontrol eder, Docker imajını derler ve VPS'e yayınlar. Pull request'lerde yalnızca kontrol çalışır; sunucuya dokunulmaz.
+
+### 1. GitHub secret'larını ekle
+
+Repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+
+| Secret | Zorunlu | Açıklama |
+|---|---|---|
+| `VPS_HOST` | Evet (deploy için) | VPS IP veya hostname |
+| `VPS_USER` | Evet | SSH kullanıcısı (`root`, `ubuntu`, …) |
+| `VPS_SSH_KEY` | Evet | Deploy için **private** SSH anahtarı |
+| `VPS_PORT` | Hayır | SSH portu (varsayılan: `22`) |
+| `VPS_APP_DIR` | Hayır | Uygulama dizini (varsayılan: `~/Wp_to_Tgram`) |
+| `TELEGRAM_BOT_TOKEN` | Hayır | Varsa her deploy'da VPS'teki `.env` güncellenir |
+| `TELEGRAM_CHAT_ID` | Hayır | Token ile birlikte |
+
+`VPS_HOST` yoksa CI yine çalışır, deploy atlanır.
+
+### 2. VPS'te deploy anahtarını tanıt
+
+Yerelde (bu anahtarı yalnızca GitHub Actions kullanır):
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-wp-to-tgram" -f ./wp-to-tgram-deploy -N ""
+```
+
+Public key'i VPS'e ekle:
+
+```bash
+ssh KULLANICI@VPS 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys' < ./wp-to-tgram-deploy.pub
+```
+
+`wp-to-tgram-deploy` dosyasının **tüm içeriğini** `VPS_SSH_KEY` secret'ına yapıştır. Private key'i git'e ekleme.
+
+VPS'te Docker ve Git kurulu olmalı. İlk WhatsApp QR taraması yine senin tarafında; oturum Docker volume'unda kalır, sonraki deploy'lar QR istemez.
+
+### 3. Elle yayınla
+
+Actions → **CI/CD** → **Run workflow**
+
 ## Desteklenen mesaj türleri
 
 | Tür | Telegram'da görünüm |

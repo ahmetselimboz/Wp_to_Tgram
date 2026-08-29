@@ -1,0 +1,109 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Kontrol
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.secrets.outputs.should_deploy }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Bağımlılıkları kur
+        run: npm ci
+
+      - name: Sözdizimi kontrolü
+        run: npm run check
+
+      - name: Docker imajını derle
+        run: docker build -t wp-to-tgram:${{ github.sha }} .
+
+      - name: Deploy sırrı var mı?
+        id: secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          if [ -n "$VPS_HOST" ]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::VPS_HOST secret yok; deploy atlandı. README'deki CI/CD adımlarına bak."
+          fi
+
+  deploy:
+    name: VPS'e yayınla
+    needs: ci
+    if: >-
+      needs.ci.outputs.should_deploy == 'true' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: VPS'te güncelle ve yeniden başlat
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 15m
+          script_stop: true
+          envs: APP_DIR,GH_TOKEN,REPO,SHA,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            set -euo pipefail
+            APP_DIR="${APP_DIR:-$HOME/Wp_to_Tgram}"
+            CLONE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+
+            if [ ! -d "${APP_DIR}/.git" ]; then
+              mkdir -p "$(dirname "$APP_DIR")"
+              git clone "$CLONE_URL" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            git remote set-url origin "$CLONE_URL"
+            git fetch origin "$SHA"
+            git checkout --force "$SHA"
+            git remote set-url origin "https://github.com/${REPO}.git"
+
+            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+              umask 077
+              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
+                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" > .env
+            fi
+
+            if [ ! -f .env ]; then
+              echo ".env yok. VPS'te .env oluştur veya GitHub'a TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID secret ekle."
+              exit 1
+            fi
+
+            docker compose up -d --build --remove-orphans
+            docker compose ps

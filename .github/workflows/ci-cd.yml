@@ -83,17 +83,26 @@ jobs:
             git reset --hard origin/main
             git remote set-url origin "$PUBLIC_URL"
 
-            CREATED_ENV=0
+            umask 077
             if [ ! -f .env ]; then
-              umask 077
               cp .env.example .env
-              CREATED_ENV=1
             fi
 
-            if [ "$CREATED_ENV" = 1 ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nNOTIFY_DELAY_MS=15000\nLOG_LEVEL=info\n' \
-                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" > .env
-            fi
+            set_env() {
+              key="$1"
+              value="$2"
+              [ -n "$value" ] || return 0
+              tmp="$(mktemp)"
+              if grep -q "^${key}=" .env; then
+                awk -v k="$key" -v v="$value" 'BEGIN{FS="="; OFS="="} $1==k {$0=k"="v} {print}' .env > "$tmp"
+                mv "$tmp" .env
+              else
+                printf '%s=%s\n' "$key" "$value" >> .env
+              fi
+            }
+
+            set_env TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
+            set_env TELEGRAM_CHAT_ID "$TELEGRAM_CHAT_ID"
 
             compose() {
               if docker info >/dev/null 2>&1; then
@@ -107,6 +116,6 @@ jobs:
               fi
             }
 
-            compose up -d --build --remove-orphans
+            compose up -d --build --remove-orphans --force-recreate
             compose ps
             docker image prune -f || true

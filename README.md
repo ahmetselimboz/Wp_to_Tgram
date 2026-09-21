@@ -128,10 +128,10 @@ Repo → **Settings** → **Secrets and variables** → **Actions**
 | `DEPLOY_SSH_KEY` | Private SSH anahtarı |
 | `DEPLOY_SSH_PASSPHRASE` | Anahtar şifresi |
 | `DEPLOY_PATH` | Sunucudaki dizin, örn. `/opt/Wp_to_Tgram` |
-| `TELEGRAM_BOT_TOKEN` | İsteğe bağlı; yalnızca **ilk** `.env` oluşturulurken yazılır |
+| `TELEGRAM_BOT_TOKEN` | Her deploy'da sunucudaki `.env`'e yazılır |
 | `TELEGRAM_CHAT_ID` | Token ile birlikte |
 
-Sonraki deploy'lar sunucudaki `.env`'i ezmez. WhatsApp oturumu `wp-to-tgram-data` volume'unda kalır.
+Diğer `.env` satırlarına dokunulmaz. WhatsApp oturumu `wp-to-tgram-data` volume'unda kalır.
 
 ### 2. İlk ayağa kalkış
 

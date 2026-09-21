@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -18,14 +17,13 @@ jobs:
   ci:
     name: Kontrol
     runs-on: ubuntu-latest
-    outputs:
-      should_deploy: ${{ steps.secrets.outputs.should_deploy }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
           cache: npm
 
       - name: Bağımlılıkları kur
@@ -37,87 +35,78 @@ jobs:
       - name: Docker imajını derle
         run: docker build -t wp-to-tgram:${{ github.sha }} .
 
-      - name: Deploy sırrı var mı?
-        id: secrets
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-        run: |
-          if [ -n "$VPS_HOST" ]; then
-            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::VPS_HOST secret yok; deploy atlandı. README'deki CI/CD adımlarına bak."
-          fi
-
   deploy:
     name: VPS'e yayınla
     needs: ci
-    if: >-
-      needs.ci.outputs.should_deploy == 'true' &&
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main')
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ENABLE_SSH_DEPLOY == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
     concurrency:
       group: production-deploy
       cancel-in-progress: false
     steps:
-      - name: VPS'te güncelle ve yeniden başlat
-        uses: appleboy/ssh-action@v1.2.5
-        env:
-          APP_DIR: ${{ secrets.VPS_APP_DIR }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          passphrase: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          port: 2222
           command_timeout: 15m
-          envs: APP_DIR,GH_TOKEN,REPO,SHA,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script_stop: true
           script: |
             set -euo pipefail
-            APP_DIR="${APP_DIR:-$HOME/Wp_to_Tgram}"
-            CLONE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+            APP_DIR='${{ secrets.DEPLOY_PATH }}'
+            REPO_URL='https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git'
+            PUBLIC_URL='https://github.com/${{ github.repository }}.git'
+            TELEGRAM_BOT_TOKEN='${{ secrets.TELEGRAM_BOT_TOKEN }}'
+            TELEGRAM_CHAT_ID='${{ secrets.TELEGRAM_CHAT_ID }}'
 
-            if [ ! -d "${APP_DIR}/.git" ]; then
-              mkdir -p "$(dirname "$APP_DIR")"
-              git clone "$CLONE_URL" "$APP_DIR"
+            if [ -z "$APP_DIR" ]; then
+              echo 'DEPLOY_PATH secret is empty' >&2
+              exit 1
             fi
 
+            mkdir -p "$APP_DIR"
             cd "$APP_DIR"
-            git remote set-url origin "$CLONE_URL"
-            git fetch origin "$SHA"
-            git checkout --force "$SHA"
-            git remote set-url origin "https://github.com/${REPO}.git"
 
-            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-              umask 077
-              EXISTING_DELAY=""
-              if [ -f .env ]; then
-                EXISTING_DELAY=$(grep '^NOTIFY_DELAY_MS=' .env | tail -n1 | cut -d= -f2- || true)
-              fi
-              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nNOTIFY_DELAY_MS=%s\n' \
-                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "${EXISTING_DELAY:-15000}" > .env
+            if [ ! -d .git ]; then
+              git init
+              git remote add origin "$REPO_URL"
             fi
 
+            git remote set-url origin "$REPO_URL"
+            git fetch origin main
+            git checkout -B main origin/main
+            git reset --hard origin/main
+            git remote set-url origin "$PUBLIC_URL"
+
+            CREATED_ENV=0
             if [ ! -f .env ]; then
-              echo ".env yok. VPS'te .env oluştur veya GitHub'a TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID secret ekle."
-              exit 1
+              umask 077
+              cp .env.example .env
+              CREATED_ENV=1
             fi
 
-            if docker info >/dev/null 2>&1; then
-              docker compose stop -t 25 || true
-              docker compose up -d --build --remove-orphans
-              docker compose ps
-            elif sudo -n docker info >/dev/null 2>&1; then
-              sudo -n docker compose stop -t 25 || true
-              sudo -n docker compose up -d --build --remove-orphans
-              sudo -n docker compose ps
-            else
-              echo "Docker izni yok. VPS'te bir kez şunu çalıştır, sonra Actions'ı tekrar çalıştır:"
-              echo "  sudo usermod -aG docker \$USER"
-              exit 1
+            if [ "$CREATED_ENV" = 1 ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nNOTIFY_DELAY_MS=15000\nLOG_LEVEL=info\n' \
+                "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" > .env
             fi
+
+            compose() {
+              if docker info >/dev/null 2>&1; then
+                docker compose -f docker-compose.yml "$@"
+              elif sudo -n docker info >/dev/null 2>&1; then
+                sudo -n docker compose -f docker-compose.yml "$@"
+              else
+                echo "Docker izni yok. VPS'te bir kez şunu çalıştır, sonra Actions'ı tekrar çalıştır:"
+                echo "  sudo usermod -aG docker \$USER"
+                exit 1
+              fi
+            }
+
+            compose up -d --build --remove-orphans
+            compose ps
+            docker image prune -f || true

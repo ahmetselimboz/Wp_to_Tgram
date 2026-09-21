@@ -1,12 +1,23 @@
+name: wp-to-tgram
+
 services:
   bridge:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wp-to-tgram:latest
     container_name: wp-to-tgram
     restart: unless-stopped
+    init: true
     stop_grace_period: 30s
     stop_signal: SIGTERM
     env_file:
       - .env
+    environment:
+      NODE_ENV: production
+      AUTH_DIR: /data/auth
+      DATA_DIR: /data
+      TZ: Europe/Istanbul
     volumes:
       - wp_data:/data
     logging:
@@ -17,3 +28,4 @@ services:
 
 volumes:
   wp_data:
+    name: wp-to-tgram-data

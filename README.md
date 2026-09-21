@@ -49,17 +49,20 @@ WhatsApp (Bulut) → Baileys (Node.js) → Telegram Bot API → Telegram (telefo
 
 ### 3. Projeyi VPS'e yükle
 
+HTTP yok; Caddy/Nginx bağlamana gerek yok. Konteyner arka planda WhatsApp oturumunu açık tutar.
+
 ```bash
-git clone https://github.com/KULLANICI/Wp_to_Tgram.git
-cd Wp_to_Tgram
+git clone https://github.com/ahmetselimboz/Wp_to_Tgram.git /opt/Wp_to_Tgram
+cd /opt/Wp_to_Tgram
 cp .env.example .env
-nano .env   # token ve chat ID'yi gir
+nano .env   # TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID
 ```
 
 ### 4. Docker ile başlat
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml up -d --build
+docker compose -f docker-compose.yml logs -f
 ```
 
 ### 5. WhatsApp QR kodunu tara
@@ -71,7 +74,7 @@ docker compose up -d --build
 
 WhatsApp → **Bağlı Cihazlar** → **Cihaz Bağla** → QR'ı tara.
 
-Bağlantı kurulunca Telegram'a `✅ WhatsApp bağlantısı kuruldu.` mesajı gelir. Oturum `data/auth` volume'unda saklanır; konteyner yeniden başlasa bile QR tekrar gerekmez.
+Bağlantı kurulunca Telegram'a `✅ WhatsApp bağlantısı kuruldu.` mesajı gelir. Oturum `wp-to-tgram-data` volume'unda (`/data/auth`) saklanır; konteyner yeniden başlasa bile QR tekrar gerekmez.
 
 ## Ortam değişkenleri
 
@@ -88,63 +91,60 @@ Bağlantı kurulunca Telegram'a `✅ WhatsApp bağlantısı kuruldu.` mesajı ge
 
 ```bash
 # Logları izle
-docker compose logs -f
+docker compose -f docker-compose.yml logs -f
 
 # Yeniden başlat
-docker compose restart
+docker compose -f docker-compose.yml restart
 
 # Durdur
-docker compose down
+docker compose -f docker-compose.yml down
 
 # Oturumu sıfırla (yeniden QR gerekir)
-docker compose down
-docker volume rm wp_to_tgram_wp_data   # volume adı projeye göre değişebilir
-docker compose up -d --build
+docker compose -f docker-compose.yml down
+docker volume rm wp-to-tgram-data
+docker compose -f docker-compose.yml up -d --build
 ```
-
-Volume adını görmek için: `docker volume ls | grep wp`
 
 ## CI/CD (GitHub Actions)
 
-`main`'e her push'ta GitHub Actions kodu kontrol eder, Docker imajını derler ve VPS'e yayınlar. Pull request'lerde yalnızca kontrol çalışır; sunucuya dokunulmaz.
+`main`'e her push'ta kod kontrolü ve Docker build çalışır. VPS deploy **kapalıdır**; açmak için aynı SSH secret'larını `newsReminder` ile paylaşabilirsin (port `2222` + passphrase).
 
-### 1. GitHub secret'larını ekle
+### 1. GitHub secret / variable
 
-Repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+Repo → **Settings** → **Secrets and variables** → **Actions**
 
-| Secret | Zorunlu | Açıklama |
-|---|---|---|
-| `VPS_HOST` | Evet (deploy için) | VPS IP veya hostname |
-| `VPS_USER` | Evet | SSH kullanıcısı (`root`, `ubuntu`, …) |
-| `VPS_SSH_KEY` | Evet | Deploy için **private** SSH anahtarı |
-| `VPS_PORT` | Hayır | SSH portu (varsayılan: `22`) |
-| `VPS_APP_DIR` | Hayır | Uygulama dizini (varsayılan: `~/Wp_to_Tgram`) |
-| `TELEGRAM_BOT_TOKEN` | Hayır | Varsa her deploy'da VPS'teki `.env` güncellenir |
-| `TELEGRAM_CHAT_ID` | Hayır | Token ile birlikte |
+**Variables**
 
-`VPS_HOST` yoksa CI yine çalışır, deploy atlanır.
+| Ad | Değer |
+|---|---|
+| `ENABLE_SSH_DEPLOY` | `true` |
 
-### 2. VPS'te deploy anahtarını tanıt
+**Secrets**
 
-Yerelde (bu anahtarı yalnızca GitHub Actions kullanır):
+| Secret | Açıklama |
+|---|---|
+| `DEPLOY_HOST` | VPS IP / hostname |
+| `DEPLOY_USER` | SSH kullanıcısı (`root`, `selim`, …) |
+| `DEPLOY_SSH_KEY` | Private SSH anahtarı |
+| `DEPLOY_SSH_PASSPHRASE` | Anahtar şifresi |
+| `DEPLOY_PATH` | Sunucudaki dizin, örn. `/opt/Wp_to_Tgram` |
+| `TELEGRAM_BOT_TOKEN` | İsteğe bağlı; yalnızca **ilk** `.env` oluşturulurken yazılır |
+| `TELEGRAM_CHAT_ID` | Token ile birlikte |
+
+Sonraki deploy'lar sunucudaki `.env`'i ezmez. WhatsApp oturumu `wp-to-tgram-data` volume'unda kalır.
+
+### 2. İlk ayağa kalkış
+
+`ENABLE_SSH_DEPLOY=true` ile `main`'e push yeter. Token'ları GitHub'a koymadıysan deploy sonrası:
 
 ```bash
-ssh-keygen -t ed25519 -C "github-actions-wp-to-tgram" -f ./wp-to-tgram-deploy -N ""
+cd /opt/Wp_to_Tgram   # DEPLOY_PATH
+nano .env
+docker compose -f docker-compose.yml up -d --force-recreate --no-build
+docker compose -f docker-compose.yml logs -f
 ```
 
-Public key'i VPS'e ekle:
-
-```bash
-ssh KULLANICI@VPS 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys' < ./wp-to-tgram-deploy.pub
-```
-
-`wp-to-tgram-deploy` dosyasının **tüm içeriğini** `VPS_SSH_KEY` secret'ına yapıştır. Private key'i git'e ekleme.
-
-VPS'te Docker ve Git kurulu olmalı. İlk WhatsApp QR taraması yine senin tarafında; oturum Docker volume'unda kalır, sonraki deploy'lar QR istemez.
-
-### 3. Elle yayınla
-
-Actions → **CI/CD** → **Run workflow**
+Elle yayın: Actions → **CI/CD** → **Run workflow**.
 
 ## Desteklenen mesaj türleri
 
